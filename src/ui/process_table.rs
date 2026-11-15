@@ -10,9 +10,16 @@ use crate::collectors::ProcessState;
 use crate::ui::Theme;
 
 /// Renders the sortable process table and synchronizes `TableState` with `app`.
-pub fn render(frame: &mut Frame, area: Rect, app: &mut AppState, theme: &Theme) {
+pub fn render(frame: &mut Frame, area: Rect, app: &AppState, theme: &Theme) {
     let viewport_height = area.height.saturating_sub(3) as usize;
-    app.adjust_scroll(viewport_height);
+    let total_rows = app.visible_rows.len();
+    let offset = compute_scroll_offset(
+        app.scroll_offset,
+        app.selected_index,
+        total_rows,
+        viewport_height,
+    );
+    let clock_ticks_per_sec = app.snapshot.as_ref().map_or(100, |s| s.clock_ticks_per_sec);
 
     let indicator = if app.sort_desc { "▼" } else { "▲" };
     let header_cells = [
@@ -46,8 +53,6 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut AppState, theme: &Theme) 
 
     let header = Row::new(header_cells).height(1);
 
-    let total_rows = app.visible_rows.len();
-    let offset = app.scroll_offset.min(total_rows);
     let end = offset.saturating_add(viewport_height).min(total_rows);
     let visible_slice = &app.visible_rows[offset..end];
 
@@ -88,7 +93,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut AppState, theme: &Theme) 
                 Cell::from(Span::styled(p.state.as_char().to_string(), state_style)),
                 Cell::from(format!("{:>5.1}", p.cpu_pct)),
                 Cell::from(format!("{:>5.1}", p.mem_pct)),
-                Cell::from(format!("{:>9}", format_cpu_time(p.cpu_time_ticks))),
+                Cell::from(format!(
+                    "{:>9}",
+                    format_cpu_time(p.cpu_time_ticks, clock_ticks_per_sec)
+                )),
                 Cell::from(command_text),
             ])
             .style(theme.text)
@@ -210,9 +218,29 @@ pub fn format_bytes(bytes: u64) -> String {
     }
 }
 
-/// Formats CPU time ticks (100 ticks/sec) as `MM:SS.cc` or `HH:MM:SS`.
-pub fn format_cpu_time(ticks: u64) -> String {
-    let total_centis = ticks;
+fn compute_scroll_offset(
+    current_offset: usize,
+    selected_index: usize,
+    total_rows: usize,
+    viewport_height: usize,
+) -> usize {
+    if viewport_height == 0 || total_rows == 0 {
+        return 0;
+    }
+    let mut offset = current_offset;
+    if selected_index < offset {
+        offset = selected_index;
+    } else if selected_index >= offset + viewport_height {
+        offset = selected_index + 1 - viewport_height;
+    }
+    let max_offset = total_rows.saturating_sub(viewport_height);
+    offset.min(max_offset)
+}
+
+/// Formats CPU time ticks using `clock_ticks_per_sec` as `MM:SS.cc` or `HH:MM:SS`.
+pub fn format_cpu_time(ticks: u64, clock_ticks_per_sec: u64) -> String {
+    let hz = clock_ticks_per_sec.max(1);
+    let total_centis = (ticks as u128 * 100 / hz as u128) as u64;
     let total_secs = total_centis / 100;
     let centis = total_centis % 100;
     let hours = total_secs / 3600;

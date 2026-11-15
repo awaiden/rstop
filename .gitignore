@@ -9,3 +9,5 @@
 .claude/
 skills-lock.json
 /docs/
+/brag-output/
+/brag-output-*/

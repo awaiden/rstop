@@ -93,12 +93,11 @@ pub enum InputMode {
 }
 
 /// Side-effect requested by `AppState::handle_key` for the runtime loop to execute.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppAction {
     None,
     Quit,
-    SendSignal { pid: i32, signal: i32 },
-    RefreshNow,
+    SendSignal { pid: i32, signal: i32, comm: String },
 }
 
 /// A single visible row in the process table, enriched with tree metadata.
@@ -427,8 +426,9 @@ impl AppState {
             KeyCode::Enter | KeyCode::Char('y') => {
                 let pid = modal.pid;
                 let signal = modal.selected_signal().signal;
+                let comm = modal.comm.clone();
                 self.input_mode = InputMode::Normal;
-                AppAction::SendSignal { pid, signal }
+                AppAction::SendSignal { pid, signal, comm }
             }
             KeyCode::Esc | KeyCode::Char('n') => {
                 self.input_mode = InputMode::Normal;
@@ -683,12 +683,10 @@ mod tests {
         ProcessInfo {
             pid,
             ppid,
-            uid: 1000,
             user: user.to_string(),
             state: ProcessState::Sleeping,
             priority: 20,
             nice: 0,
-            threads: 1,
             rss_bytes: 1024,
             vsize_bytes: 4096,
             mem_pct,
@@ -711,8 +709,7 @@ mod tests {
             net: Vec::new(),
             processes,
             total_cpu_delta_ticks: 100,
-            num_cores: 4,
-            collected_at: Instant::now(),
+            clock_ticks_per_sec: 100,
         }
     }
 
@@ -1174,7 +1171,14 @@ mod tests {
         // Move down to SIGKILL (9) and confirm with 'y'
         state.handle_key(key(KeyCode::Down));
         let action = state.handle_key(key(KeyCode::Char('y')));
-        assert_eq!(action, AppAction::SendSignal { pid: 2, signal: 9 });
+        assert_eq!(
+            action,
+            AppAction::SendSignal {
+                pid: 2,
+                signal: 9,
+                comm: "alpha".to_string()
+            }
+        );
         assert_eq!(state.input_mode, InputMode::Normal);
 
         // Open SignalModal via F9 and cancel with Esc

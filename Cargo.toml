@@ -1,6 +1,6 @@
 [package]
 name = "rstop"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Interactive Linux terminal system monitor inspired by htop and btop"
 license = "MIT"

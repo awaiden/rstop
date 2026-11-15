@@ -97,10 +97,6 @@ pub fn compute_net_rates(
 
             NetInterfaceStats {
                 name: c.name.clone(),
-                rx_bytes: c.rx_bytes,
-                tx_bytes: c.tx_bytes,
-                rx_packets: c.rx_packets,
-                tx_packets: c.tx_packets,
                 rx_bytes_per_sec,
                 tx_bytes_per_sec,
             }

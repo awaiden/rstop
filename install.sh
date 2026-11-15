@@ -51,11 +51,27 @@ curl -fsSL "$BASE_URL/$ARCHIVE" -o "$TMP_DIR/$ARCHIVE"
 if command -v sha256sum >/dev/null 2>&1; then
   curl -fsSL "$BASE_URL/$ARCHIVE.sha256" -o "$TMP_DIR/$ARCHIVE.sha256"
   (cd "$TMP_DIR" && sha256sum -c "$ARCHIVE.sha256")
+elif command -v shasum >/dev/null 2>&1; then
+  curl -fsSL "$BASE_URL/$ARCHIVE.sha256" -o "$TMP_DIR/$ARCHIVE.sha256"
+  (cd "$TMP_DIR" && shasum -a 256 -c "$ARCHIVE.sha256")
+else
+  echo "error: cannot verify checksum (neither sha256sum nor shasum is installed)" >&2
+  exit 1
 fi
 
 tar -C "$TMP_DIR" -xzf "$TMP_DIR/$ARCHIVE"
 
-if [ -w "$INSTALL_DIR" ]; then
+probe="$INSTALL_DIR"
+while [ ! -e "$probe" ]; do
+  parent="$(dirname "$probe")"
+  if [ "$parent" = "$probe" ]; then
+    break
+  fi
+  probe="$parent"
+done
+
+if [ -d "$probe" ] && [ -w "$probe" ]; then
+  mkdir -p "$INSTALL_DIR"
   install -m 755 "$TMP_DIR/$BIN_NAME" "$INSTALL_DIR/$BIN_NAME"
 else
   sudo mkdir -p "$INSTALL_DIR"

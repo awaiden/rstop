@@ -283,20 +283,28 @@ fn render_sys_panel(frame: &mut Frame, area: Rect, snapshot: &SystemSnapshot, th
 }
 
 fn aggregate_net_rates(snapshot: &SystemSnapshot) -> (f64, f64) {
-    let non_lo: Vec<_> = snapshot
-        .net
-        .iter()
-        .filter(|iface| iface.name != "lo")
-        .collect();
-    let list = if non_lo.is_empty() {
-        snapshot.net.iter().collect::<Vec<_>>()
-    } else {
-        non_lo
-    };
+    let mut non_lo_rx = 0.0;
+    let mut non_lo_tx = 0.0;
+    let mut has_non_lo = false;
+    let mut lo_rx = 0.0;
+    let mut lo_tx = 0.0;
 
-    list.into_iter().fold((0.0, 0.0), |(rx, tx), iface| {
-        (rx + iface.rx_bytes_per_sec, tx + iface.tx_bytes_per_sec)
-    })
+    for iface in &snapshot.net {
+        if iface.name == "lo" {
+            lo_rx += iface.rx_bytes_per_sec;
+            lo_tx += iface.tx_bytes_per_sec;
+        } else {
+            has_non_lo = true;
+            non_lo_rx += iface.rx_bytes_per_sec;
+            non_lo_tx += iface.tx_bytes_per_sec;
+        }
+    }
+
+    if has_non_lo {
+        (non_lo_rx, non_lo_tx)
+    } else {
+        (lo_rx, lo_tx)
+    }
 }
 
 /// Formats a KiB value into human-readable KiB, MiB, or GiB.

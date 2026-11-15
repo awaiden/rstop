@@ -62,34 +62,9 @@ impl<T> HistoryBuffer<T> {
         self.buf.push_back(value);
     }
 
-    /// Returns the underlying contiguous slices of the ring buffer.
-    pub fn as_slices(&self) -> (&[T], &[T]) {
-        self.buf.as_slices()
-    }
-
     /// Returns an iterator from oldest to newest element.
     pub fn iter(&self) -> std::collections::vec_deque::Iter<'_, T> {
         self.buf.iter()
-    }
-
-    /// Returns the most recently pushed element, if any.
-    pub fn latest(&self) -> Option<&T> {
-        self.buf.back()
-    }
-
-    /// Returns the maximum number of elements retained by this buffer.
-    pub fn capacity(&self) -> usize {
-        self.capacity
-    }
-
-    /// Returns the current number of stored elements.
-    pub fn len(&self) -> usize {
-        self.buf.len()
-    }
-
-    /// Returns `true` if the buffer contains no elements.
-    pub fn is_empty(&self) -> bool {
-        self.buf.is_empty()
     }
 }
 
@@ -151,14 +126,10 @@ pub struct MemStats {
     pub total_kb: u64,
     pub used_kb: u64,
     pub free_kb: u64,
-    pub available_kb: u64,
     pub buffers_kb: u64,
     pub cached_kb: u64,
-    pub shared_kb: u64,
     pub swap_total_kb: u64,
     pub swap_used_kb: u64,
-    pub swap_cached_kb: u64,
-    pub swap_free_kb: u64,
 }
 
 /// Load averages, system uptime, and thread counts from `/proc/loadavg` and `/proc/uptime`.
@@ -172,14 +143,10 @@ pub struct LoadUptime {
     pub total_threads: u32,
 }
 
-/// Network interface counters and computed transfer rates.
+/// Network interface computed transfer rates.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NetInterfaceStats {
     pub name: String,
-    pub rx_bytes: u64,
-    pub tx_bytes: u64,
-    pub rx_packets: u64,
-    pub tx_packets: u64,
     pub rx_bytes_per_sec: f64,
     pub tx_bytes_per_sec: f64,
 }
@@ -193,8 +160,7 @@ pub struct SystemSnapshot {
     pub net: Vec<NetInterfaceStats>,
     pub processes: Vec<ProcessInfo>,
     pub total_cpu_delta_ticks: u64,
-    pub num_cores: usize,
-    pub collected_at: Instant,
+    pub clock_ticks_per_sec: u64,
 }
 
 /// Stateful collector that samples `/proc` and computes deltas across ticks.
@@ -308,8 +274,7 @@ impl SystemCollector {
             net,
             processes,
             total_cpu_delta_ticks,
-            num_cores,
-            collected_at: now,
+            clock_ticks_per_sec: self.process_collector.clock_ticks_per_sec(),
         })
     }
 }
@@ -323,37 +288,121 @@ fn read_proc_file(proc_root: &Path, relative: &str) -> Result<String, CollectorE
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     #[test]
     fn history_buffer_evicts_oldest_at_capacity() {
         let mut buf = HistoryBuffer::new(3);
-        assert_eq!(buf.capacity(), 3);
-        assert!(buf.is_empty());
-        assert_eq!(buf.latest(), None);
+        assert_eq!(buf.iter().count(), 0);
 
         buf.push(1.0);
         buf.push(2.0);
         buf.push(3.0);
-        assert_eq!(buf.len(), 3);
-        assert_eq!(buf.latest(), Some(&3.0));
+        assert_eq!(buf.iter().copied().collect::<Vec<_>>(), vec![1.0, 2.0, 3.0]);
 
         buf.push(4.0);
-        assert_eq!(buf.len(), 3);
-        assert_eq!(buf.latest(), Some(&4.0));
-        let collected: Vec<f64> = buf.iter().copied().collect();
-        assert_eq!(collected, vec![2.0, 3.0, 4.0]);
-
-        let (a, b) = buf.as_slices();
-        let combined: Vec<f64> = a.iter().chain(b.iter()).copied().collect();
-        assert_eq!(combined, vec![2.0, 3.0, 4.0]);
+        assert_eq!(buf.iter().copied().collect::<Vec<_>>(), vec![2.0, 3.0, 4.0]);
     }
 
     #[test]
     fn history_buffer_zero_capacity_is_noop() {
         let mut buf = HistoryBuffer::new(0);
         buf.push(42.0);
-        assert!(buf.is_empty());
-        assert_eq!(buf.latest(), None);
-        assert_eq!(buf.capacity(), 0);
+        assert_eq!(buf.iter().count(), 0);
+    }
+
+    fn make_temp_proc_dir(tag: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "rstop_sys_test_{tag}_{}_{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    fn write_proc_fixture(
+        proc_root: &Path,
+        cpu_user: u64,
+        cpu_idle: u64,
+        rx_bytes: u64,
+        tx_bytes: u64,
+        proc_utime: u64,
+    ) {
+        fs::create_dir_all(proc_root.join("net")).expect("create net dir");
+        fs::create_dir_all(proc_root.join("101")).expect("create pid dir");
+
+        let stat = format!(
+            "cpu  {cpu_user} 0 0 {cpu_idle} 0 0 0 0 0 0\n\
+             cpu0 {cpu_user} 0 0 {cpu_idle} 0 0 0 0 0 0\n"
+        );
+        fs::write(proc_root.join("stat"), stat).expect("write stat");
+
+        let meminfo = "\
+MemTotal:       1000000 kB
+MemFree:         200000 kB
+Buffers:          50000 kB
+Cached:          100000 kB
+SwapTotal:       500000 kB
+SwapFree:        400000 kB
+";
+        fs::write(proc_root.join("meminfo"), meminfo).expect("write meminfo");
+        fs::write(proc_root.join("loadavg"), "0.50 0.25 0.10 1/100 101\n").expect("write loadavg");
+        fs::write(proc_root.join("uptime"), "1234.56 2000.00\n").expect("write uptime");
+
+        let net_dev = format!(
+            "Inter-|   Receive                                                |  Transmit\n\
+             face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n\
+             eth0: {rx_bytes} 10 0 0 0 0 0 0 {tx_bytes} 10 0 0 0 0 0 0\n"
+        );
+        fs::write(proc_root.join("net/dev"), net_dev).expect("write net/dev");
+
+        let proc_stat = format!(
+            "101 (worker) R 1 101 101 0 -1 4194304 0 0 0 0 {proc_utime} 0 0 0 20 0 1 0 100 1048576 256 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n"
+        );
+        fs::write(proc_root.join("101/stat"), proc_stat).expect("write pid stat");
+        fs::write(proc_root.join("101/status"), "Uid:\t0\t0\t0\t0\n").expect("write pid status");
+        fs::write(proc_root.join("101/cmdline"), b"/usr/bin/worker\0").expect("write pid cmdline");
+    }
+
+    #[test]
+    fn system_collector_multi_tick_computes_history_net_rates_and_process_deltas() {
+        let proc_root = make_temp_proc_dir("multi_tick");
+        let mut collector = SystemCollector::with_proc_root(proc_root.clone(), 10);
+
+        // Tick 1: baseline
+        write_proc_fixture(&proc_root, 100, 900, 1000, 500, 10);
+        let snap1 = collector.collect().expect("tick 1");
+        assert_eq!(snap1.cpu.history.iter().count(), 0);
+        assert_eq!(snap1.net.len(), 1);
+        assert_eq!(snap1.net[0].rx_bytes_per_sec, 0.0);
+        assert_eq!(snap1.net[0].tx_bytes_per_sec, 0.0);
+        assert_eq!(snap1.processes.len(), 1);
+        assert_eq!(snap1.processes[0].cpu_pct, 0.0);
+
+        std::thread::sleep(Duration::from_millis(20));
+
+        // Tick 2: +50 user, +50 idle (total delta = 100, 50% CPU), +1000 rx, +500 tx, +25 proc utime
+        write_proc_fixture(&proc_root, 150, 950, 2000, 1000, 35);
+        let snap2 = collector.collect().expect("tick 2");
+        let history: Vec<f64> = snap2.cpu.history.iter().copied().collect();
+        assert_eq!(history.len(), 1);
+        assert!((history[0] - 50.0).abs() < 1e-6);
+        assert!((snap2.cpu.total.total_pct - 50.0).abs() < 1e-6);
+
+        assert_eq!(snap2.net.len(), 1);
+        assert!(snap2.net[0].rx_bytes_per_sec > 0.0);
+        assert!(snap2.net[0].tx_bytes_per_sec > 0.0);
+
+        assert_eq!(snap2.processes.len(), 1);
+        // 25 / 100 * 100.0 * 1 core = 25.0%
+        assert!((snap2.processes[0].cpu_pct - 25.0).abs() < 1e-6);
+        assert_eq!(snap2.processes[0].cpu_time_ticks, 35);
+
+        let _ = fs::remove_dir_all(&proc_root);
     }
 }

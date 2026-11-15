@@ -100,7 +100,7 @@ impl Theme {
 }
 
 /// Renders the complete `rstop` TUI frame: header, process table, footer, and active overlays.
-pub fn render(frame: &mut Frame, app: &mut AppState) {
+pub fn render(frame: &mut Frame, app: &AppState) {
     let theme = Theme::new(app.no_color);
     let area = frame.area();
     let header_height = header::desired_height(app, area.width, area.height);
@@ -158,8 +158,6 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &AppState, theme: &Theme) {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Instant;
-
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
@@ -206,14 +204,10 @@ mod tests {
                 total_kb: 16 * 1024 * 1024,
                 used_kb: 6 * 1024 * 1024,
                 free_kb: 4 * 1024 * 1024,
-                available_kb: 10 * 1024 * 1024,
                 buffers_kb: 512 * 1024,
                 cached_kb: 3 * 1024 * 1024,
-                shared_kb: 128 * 1024,
                 swap_total_kb: 4 * 1024 * 1024,
                 swap_used_kb: 512 * 1024,
-                swap_cached_kb: 0,
-                swap_free_kb: 3_584 * 1024,
             },
             load: LoadUptime {
                 load1: 1.25,
@@ -225,10 +219,6 @@ mod tests {
             },
             net: vec![NetInterfaceStats {
                 name: "eth0".to_string(),
-                rx_bytes: 1_000_000,
-                tx_bytes: 500_000,
-                rx_packets: 1000,
-                tx_packets: 500,
                 rx_bytes_per_sec: 1_572_864.0,
                 tx_bytes_per_sec: 262_144.0,
             }],
@@ -236,12 +226,10 @@ mod tests {
                 ProcessInfo {
                     pid: 1,
                     ppid: 0,
-                    uid: 0,
                     user: "root".to_string(),
                     state: ProcessState::Sleeping,
                     priority: 20,
                     nice: 0,
-                    threads: 1,
                     rss_bytes: 12 * 1024 * 1024,
                     vsize_bytes: 128 * 1024 * 1024,
                     mem_pct: 0.1,
@@ -253,12 +241,10 @@ mod tests {
                 ProcessInfo {
                     pid: 100,
                     ppid: 1,
-                    uid: 1000,
                     user: "alice".to_string(),
                     state: ProcessState::Running,
                     priority: 20,
                     nice: 0,
-                    threads: 4,
                     rss_bytes: 256 * 1024 * 1024,
                     vsize_bytes: 1024 * 1024 * 1024,
                     mem_pct: 1.6,
@@ -270,12 +256,10 @@ mod tests {
                 ProcessInfo {
                     pid: 101,
                     ppid: 100,
-                    uid: 1000,
                     user: "alice".to_string(),
                     state: ProcessState::Sleeping,
                     priority: 20,
                     nice: 0,
-                    threads: 1,
                     rss_bytes: 32 * 1024 * 1024,
                     vsize_bytes: 64 * 1024 * 1024,
                     mem_pct: 0.2,
@@ -287,12 +271,10 @@ mod tests {
                 ProcessInfo {
                     pid: 102,
                     ppid: 1,
-                    uid: 0,
                     user: "root".to_string(),
                     state: ProcessState::Sleeping,
                     priority: 20,
                     nice: 0,
-                    threads: 1,
                     rss_bytes: 16 * 1024 * 1024,
                     vsize_bytes: 48 * 1024 * 1024,
                     mem_pct: 0.1,
@@ -303,8 +285,7 @@ mod tests {
                 },
             ],
             total_cpu_delta_ticks: 100,
-            num_cores: 2,
-            collected_at: Instant::now(),
+            clock_ticks_per_sec: 100,
         }
     }
 

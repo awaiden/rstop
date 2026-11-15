@@ -10,7 +10,6 @@ use super::{CollectorError, MemStats};
 pub fn parse_meminfo(content: &str) -> Result<MemStats, CollectorError> {
     let mut total_kb: Option<u64> = None;
     let mut free_kb = 0u64;
-    let mut available_raw = 0u64;
     let mut buffers_kb = 0u64;
     let mut cached_raw = 0u64;
     let mut sreclaimable_kb = 0u64;
@@ -33,7 +32,6 @@ pub fn parse_meminfo(content: &str) -> Result<MemStats, CollectorError> {
         match key {
             "MemTotal" => total_kb = Some(val),
             "MemFree" => free_kb = val,
-            "MemAvailable" => available_raw = val,
             "Buffers" => buffers_kb = val,
             "Cached" => cached_raw = val,
             "SReclaimable" => sreclaimable_kb = val,
@@ -62,12 +60,6 @@ pub fn parse_meminfo(content: &str) -> Result<MemStats, CollectorError> {
         total_kb.saturating_sub(free_kb)
     };
 
-    let available_kb = if available_raw != 0 {
-        available_raw.min(total_kb)
-    } else {
-        free_kb
-    };
-
     let swap_used_kb = swap_total_kb
         .saturating_sub(swap_free_kb)
         .saturating_sub(swap_cached_kb);
@@ -76,14 +68,10 @@ pub fn parse_meminfo(content: &str) -> Result<MemStats, CollectorError> {
         total_kb,
         used_kb,
         free_kb,
-        available_kb,
         buffers_kb,
         cached_kb,
-        shared_kb,
         swap_total_kb,
         swap_used_kb,
-        swap_cached_kb,
-        swap_free_kb,
     })
 }
 
@@ -112,17 +100,13 @@ SUnreclaim:       200000 kB
         let stats = parse_meminfo(SAMPLE_MEMINFO).expect("valid /proc/meminfo");
         assert_eq!(stats.total_kb, 16_384_000);
         assert_eq!(stats.free_kb, 2_048_000);
-        assert_eq!(stats.available_kb, 8_192_000);
         assert_eq!(stats.buffers_kb, 512_000);
-        assert_eq!(stats.shared_kb, 400_000);
         // cached = Cached(5_000_000) + SReclaimable(600_000) - Shmem(400_000) = 5_200_000
         assert_eq!(stats.cached_kb, 5_200_000);
         // used_diff = 2_048_000 + 5_000_000 + 600_000 + 512_000 = 8_160_000
         // used = 16_384_000 - 8_160_000 = 8_224_000
         assert_eq!(stats.used_kb, 8_224_000);
         assert_eq!(stats.swap_total_kb, 4_096_000);
-        assert_eq!(stats.swap_free_kb, 3_000_000);
-        assert_eq!(stats.swap_cached_kb, 100_000);
         // swap_used = 4_096_000 - 3_000_000 - 100_000 = 996_000
         assert_eq!(stats.swap_used_kb, 996_000);
     }
@@ -142,8 +126,6 @@ SwapCached:      200 kB
         let stats = parse_meminfo(meminfo).expect("valid fallback /proc/meminfo");
         // used_diff = 400 + 500 + 0 + 300 = 1200 > 1000 -> fallback total - free = 600
         assert_eq!(stats.used_kb, 600);
-        // available missing -> fallback free_kb = 400
-        assert_eq!(stats.available_kb, 400);
         // cached = (500 + 0).saturating_sub(600) = 0
         assert_eq!(stats.cached_kb, 0);
         // swap_used = 500 - 400 - 200 saturating = 0

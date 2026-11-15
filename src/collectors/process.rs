@@ -69,12 +69,10 @@ pub struct ProcStatRaw {
 pub struct ProcessInfo {
     pub pid: i32,
     pub ppid: i32,
-    pub uid: u32,
     pub user: String,
     pub state: ProcessState,
     pub priority: i64,
     pub nice: i64,
-    pub threads: i64,
     pub rss_bytes: u64,
     pub vsize_bytes: u64,
     pub mem_pct: f64,
@@ -131,26 +129,6 @@ impl ProcessCollector {
     /// Returns the system clock ticks per second (`_SC_CLK_TCK`).
     pub fn clock_ticks_per_sec(&self) -> u64 {
         self.clock_ticks_per_sec
-    }
-
-    /// Returns the system memory page size in bytes (`_SC_PAGESIZE`).
-    pub fn page_size(&self) -> u64 {
-        self.page_size
-    }
-
-    /// Collects process information from `/proc`.
-    pub fn collect(
-        &mut self,
-        total_cpu_delta_ticks: u64,
-        total_mem_kb: u64,
-        num_cores: usize,
-    ) -> Result<Vec<ProcessInfo>, CollectorError> {
-        self.collect_from_proc(
-            Path::new("/proc"),
-            total_cpu_delta_ticks,
-            total_mem_kb,
-            num_cores,
-        )
     }
 
     /// Collects process information from `proc_root`.
@@ -271,12 +249,10 @@ impl ProcessCollector {
             processes.push(ProcessInfo {
                 pid: stat.pid,
                 ppid: stat.ppid,
-                uid,
                 user,
                 state: stat.state,
                 priority: stat.priority,
                 nice: stat.nice,
-                threads: stat.num_threads,
                 rss_bytes,
                 vsize_bytes: stat.vsize,
                 mem_pct,
@@ -305,6 +281,12 @@ fn query_sysconf(name: libc::c_int, fallback: u64) -> u64 {
     if val > 0 { val as u64 } else { fallback }
 }
 
+fn sanitize_control_chars(s: &str) -> String {
+    s.chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect()
+}
+
 fn is_vanished_process_error(err: &io::Error) -> bool {
     err.kind() == io::ErrorKind::NotFound || err.raw_os_error() == Some(libc::ESRCH)
 }
@@ -329,7 +311,7 @@ pub fn parse_proc_pid_stat(content: &str) -> Result<ProcStatRaw, CollectorError>
         .parse()
         .map_err(|_| CollectorError::Parse(format!("invalid pid '{pid_str}'")))?;
 
-    let comm = content[open_paren + 1..close_paren].to_string();
+    let comm = sanitize_control_chars(&content[open_paren + 1..close_paren]);
     let rest = &content[close_paren + 1..];
 
     let mut f_state = None;
@@ -428,19 +410,20 @@ pub fn parse_passwd(content: &str) -> HashMap<u32, String> {
             continue;
         };
         if let Ok(uid) = uid_str.parse::<u32>() {
-            map.entry(uid).or_insert_with(|| name.to_string());
+            map.entry(uid)
+                .or_insert_with(|| sanitize_control_chars(name));
         }
     }
     map
 }
 
-/// Formats `/proc/[pid]/cmdline` bytes by replacing `\0` separators with spaces
+/// Formats `/proc/[pid]/cmdline` bytes by replacing `\0` and control characters with spaces
 /// and falling back to `[comm]` when empty (e.g., kernel threads).
 pub fn format_cmdline(raw_bytes: &[u8], comm: &str) -> String {
     let is_sep = |b: u8| b == 0 || b.is_ascii_whitespace();
     let start = raw_bytes.iter().position(|&b| !is_sep(b));
     let Some(start) = start else {
-        return format!("[{comm}]");
+        return format!("[{}]", sanitize_control_chars(comm));
     };
     let end = raw_bytes
         .iter()
@@ -451,7 +434,7 @@ pub fn format_cmdline(raw_bytes: &[u8], comm: &str) -> String {
     let lossy = String::from_utf8_lossy(trimmed_bytes);
     let mut out = String::with_capacity(lossy.len());
     for ch in lossy.chars() {
-        out.push(if ch == '\0' { ' ' } else { ch });
+        out.push(if ch.is_control() { ' ' } else { ch });
     }
     out
 }
@@ -662,5 +645,30 @@ badline
         assert_eq!(procs[0].pid, 101);
 
         let _ = fs::remove_dir_all(&proc_root);
+    }
+
+    #[test]
+    fn untrusted_strings_strip_control_and_escape_sequences() {
+        // comm with ANSI CSI + OSC (\x1b, \x07, \r, \n)
+        let stat_line = "555 (evil\x1b[31m\x1b]0;pwn\x07\r\n) S 1 555 555 0 -1 0 0 0 0 0 1 0 0 0 20 0 1 0 10 1024 1 0";
+        let parsed = parse_proc_pid_stat(stat_line).expect("should parse stat");
+        assert!(!parsed.comm.chars().any(char::is_control));
+        assert_eq!(parsed.comm, "evil [31m ]0;pwn   ");
+
+        // cmdline with ANSI/OSC/newline/carriage return
+        let cmd = format_cmdline(b"/bin/app\0--title=\x1b]2;hacked\x07\r\n--ok", "app");
+        assert!(!cmd.chars().any(char::is_control));
+        assert_eq!(cmd, "/bin/app --title= ]2;hacked   --ok");
+
+        // empty cmdline fallback also sanitizes comm
+        let fallback = format_cmdline(b"", "kworker\x1b[2J\x07");
+        assert!(!fallback.chars().any(char::is_control));
+        assert_eq!(fallback, "[kworker [2J ]");
+
+        // /etc/passwd username with control characters
+        let passwd = parse_passwd("bad\x1b[31m\x07user:x:1234:1234::/home/u:/bin/sh\n");
+        let name = passwd.get(&1234).expect("uid 1234");
+        assert!(!name.chars().any(char::is_control));
+        assert_eq!(name, "bad [31m user");
     }
 }
